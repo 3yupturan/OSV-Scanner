@@ -34,21 +34,25 @@ func (r *GHAnnotationsReporter) HasErrored() bool {
 }
 
 func (r *GHAnnotationsReporter) Warnf(format string, a ...any) {
-	if WarnLevel <= r.level {
+	if r.CanPrintAtLevel(WarnLevel) {
 		fmt.Fprintf(r.stderr, format, a...)
 	}
 }
 
 func (r *GHAnnotationsReporter) Infof(format string, a ...any) {
-	if InfoLevel <= r.level {
+	if r.CanPrintAtLevel(InfoLevel) {
 		fmt.Fprintf(r.stderr, format, a...)
 	}
 }
 
 func (r *GHAnnotationsReporter) Verbosef(format string, a ...any) {
-	if VerboseLevel <= r.level {
+	if r.CanPrintAtLevel(VerboseLevel) {
 		fmt.Fprintf(r.stderr, format, a...)
 	}
+}
+
+func (r *GHAnnotationsReporter) CanPrintAtLevel(lvl VerbosityLevel) bool {
+	return lvl <= r.level
 }
 
 func (r *GHAnnotationsReporter) PrintResult(vulnResult *models.VulnerabilityResults) error {

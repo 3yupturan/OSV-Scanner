@@ -3,9 +3,11 @@ package osvscanner
 import (
 	"bufio"
 	"crypto/md5" //nolint:gosec
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -945,10 +947,14 @@ func makeRequest(
 		return &osv.HydratedBatchedResponse{}, fmt.Errorf("scan failed %w", err)
 	}
 
+	printBatchQueryIfPossible(r, &query, resp)
+
 	hydratedResp, err := osv.Hydrate(resp)
 	if err != nil {
 		return &osv.HydratedBatchedResponse{}, fmt.Errorf("failed to hydrate OSV response: %w", err)
 	}
+
+	printHydrationCallsIfPossible(r, resp, hydratedResp)
 
 	return hydratedResp, nil
 }
@@ -968,4 +974,63 @@ func makeLicensesRequests(packages []scannedPackage) ([][]models.License, error)
 	}
 
 	return licenses, nil
+}
+
+func printBatchQueryIfPossible(r reporter.Reporter, query *osv.BatchedQuery, resp *osv.BatchedResponse) {
+	if r.CanPrintAtLevel(reporter.VerboseLevel) {
+		method := http.MethodPost
+		endpoint := osv.QueryEndpoint
+
+		msg := buildHTTPMessage(method, endpoint, query, false)
+		r.Verbosef(msg)
+
+		msg = buildHTTPMessage(method, endpoint, resp, true)
+		r.Verbosef(msg)
+	}
+}
+
+func printHydrationCallsIfPossible(r reporter.Reporter, resp *osv.BatchedResponse, hydratedResp *osv.HydratedBatchedResponse) {
+	if r.CanPrintAtLevel(reporter.VerboseLevel) {
+		method := http.MethodGet
+
+		for batchIdx, batchResp := range resp.Results {
+			for vulnIdx, vuln := range batchResp.Vulns {
+				endpoint := fmt.Sprintf("%s/%s", osv.GetEndpoint, vuln.ID)
+				msg := buildHTTPMessage(method, endpoint, nil, false)
+				r.Verbosef(msg)
+
+				hydratedResp := hydratedResp.Results[batchIdx]
+				msg = buildHTTPMessage(method, endpoint, hydratedResp.Vulns[vulnIdx], true)
+				r.Verbosef(msg)
+			}
+		}
+	}
+}
+
+func buildHTTPMessage(method, endpoint string, body any, isResponse bool) string {
+	prefix := "> "
+
+	if isResponse {
+		prefix = "< "
+	}
+
+	if body == nil {
+		// Given an empty HTTP body.
+		return fmt.Sprintf("%s%s %s\n", prefix, method, endpoint)
+	}
+
+	var bodyAsString string
+	if bodyAsBytes, err := json.MarshalIndent(body, prefix, "  "); err == nil {
+		b := strings.Builder{}
+		// Append prefix since MarshalIndent() doesn't include one in the first line.
+		b.WriteString(prefix)
+
+		for _, bbyte := range bodyAsBytes {
+			b.WriteByte(bbyte)
+		}
+
+		bodyAsString = b.String()
+	}
+
+	return fmt.Sprintf("%s%s %s\n%s\n", prefix, method, endpoint, bodyAsString)
 }
