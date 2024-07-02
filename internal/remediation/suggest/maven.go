@@ -7,8 +7,8 @@ import (
 	"log"
 	"strings"
 
+	"deps.dev/util/maven"
 	"deps.dev/util/resolve"
-	"deps.dev/util/resolve/dep"
 	"deps.dev/util/semver"
 	"github.com/google/osv-scanner/internal/resolution/manifest"
 	"github.com/google/osv-scanner/pkg/lockfile"
@@ -28,7 +28,7 @@ func (ms *MavenSuggester) Suggest(ctx context.Context, client resolve.Client, mf
 
 	var changedDeps []manifest.DependencyPatch
 	propertyPatches := manifest.MavenPropertyPatches{}
-	for _, req := range mf.Requirements {
+	for _, req := range append(mf.Requirements, specific.RequirementsForUpdates...) {
 		if slices.Contains(opts.NoUpdates, req.Name) {
 			continue
 		}
@@ -52,15 +52,22 @@ func (ms *MavenSuggester) Suggest(ctx context.Context, client resolve.Client, mf
 			Type:       req.Type,
 			NewRequire: latest.Version,
 		}
+		origReq, depOrigin := originalRequirement(patch, specific.OriginalRequirements)
+		if origReq == "" {
+			// Cannot find the original requirement indicates the requirement not in base project
+			continue
+		}
 
-		origReq := originalRequirement(req, specific.RequirementsWithProperties)
-		if !requirementHasProperty(origReq) {
+		dep, _, _ := resolve.MavenDepTypeToDependency(patch.Type)
+		patch.Type = resolve.MavenDepType(dep, depOrigin)
+
+		if !origReq.ContainsProperty() {
 			// The original requirement does not contain a property placeholder.
 			changedDeps = append(changedDeps, patch)
 			continue
 		}
 
-		patches, ok := generatePropertyPatches(origReq, latest.Version)
+		patches, ok := generatePropertyPatches(string(origReq), patch.NewRequire)
 		if !ok {
 			// Not able to update properties to update the requirement.
 			// Update the dependency directly instead.
@@ -68,7 +75,6 @@ func (ms *MavenSuggester) Suggest(ctx context.Context, client resolve.Client, mf
 			continue
 		}
 
-		depOrigin, _ := req.Type.GetAttr(dep.MavenDependencyOrigin)
 		if strings.HasPrefix(depOrigin, manifest.OriginProfile) {
 			// Dependency management is not indicated in property origin.
 			depOrigin, _ = strings.CutSuffix(depOrigin, "@"+manifest.OriginManagement)
@@ -172,24 +178,25 @@ func suggestMavenVersion(ctx context.Context, client resolve.Client, req resolve
 	return req, nil
 }
 
-// originalRequirement returns the orignal requirement of a requirement version.
-// If the version is not found in imports, an empty string is returned.
-func originalRequirement(version resolve.RequirementVersion, imports []resolve.RequirementVersion) string {
-	for _, i := range imports {
-		if version.Name == i.Name && version.Type.Equal(i.Type) {
-			return i.Version
+// originalRequirement returns the original requirement of a requirement version and its origin.
+// If the version is not found, empty strings are returned.
+func originalRequirement(patch manifest.DependencyPatch, origReqs []manifest.DependencyWithOrigin) (maven.String, string) {
+	IDs := strings.Split(patch.Pkg.Name, ":")
+	if len(IDs) != 2 {
+		return "", ""
+	}
+
+	dependency, _, _ := resolve.MavenDepTypeToDependency(patch.Type)
+	dependency.GroupID = maven.String(IDs[0])
+	dependency.ArtifactID = maven.String(IDs[1])
+
+	for _, d := range origReqs {
+		if d.Key() == dependency.Key() {
+			return d.Version, d.Origin
 		}
 	}
 
-	return ""
-}
-
-// TODO: use the method in Maven manifest package
-// requirementHasProperty returns whether an original requirement contains property
-// placeholder ${name} or not.
-func requirementHasProperty(origReq string) bool {
-	i := strings.Index(origReq, "${")
-	return i >= 0 && strings.Contains(origReq[i+2:], "}")
+	return "", ""
 }
 
 // generatePropertyPatches returns whether we are able to assign values to
